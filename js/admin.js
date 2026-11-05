@@ -50,14 +50,18 @@ window.ADM = (function () {
 
       '<div class="card"><div class="card-title">团队共享（默认已开启 · 零配置）</div>' +
       '<div class="row"><span class="muted">连接状态</span><span class="bold">' +
-      (!st.enabled ? '本机模式' : (st.cloudOn ? '已连接 · 全员共用' : (st.error ? '离线（本地已保存）' : '连接中'))) + '</span></div>' +
+      (!st.enabled ? '本机模式（工友看不到）' : (st.cloudOn ? '已连接 · 全员共用' : (st.error ? '云端未连通' : '连接中'))) + '</span></div>' +
+      '<div class="row"><span class="muted">程序版本</span><span class="bold">v' + U.esc(st.build || '旧版') + '</span></div>' +
       '<div class="row"><span class="muted">数据仓</span><span class="bold">' +
       (st.isDefault ? '工区默认共享仓' : (st.provider === 'supabase' ? '自建云数据库' : '自定义共享仓')) + '</span></div>' +
       '<div class="row"><span class="muted">待上传改动</span><span class="bold">' + (st.pending ? '有（联网自动补传）' : '无') + '</span></div>' +
       (st.error ? '<div class="badge badge-bad" style="margin-top:6px">' + U.esc(st.error) + '</div>' : '') +
+      (!st.enabled ? '<div class="badge badge-bad" style="margin-top:6px">当前是本机模式，请恢复团队共享</div>' : '') +
       '<div style="margin-top:10px">' +
       '<button class="btn btn-line btn-sm" onclick="ADM.joinCode()">生成团队码（发工区群）</button> ' +
       '<button class="btn btn-line btn-sm" onclick="ADM.reloadCloud()">立即同步</button> ' +
+      '<button class="btn btn-line btn-sm" onclick="BOARD.diagnose()">同步自检</button> ' +
+      (!st.enabled ? '<button class="btn btn-sm" onclick="BOARD.restoreTeam()">恢复团队共享</button> ' : '') +
       '<button class="btn btn-gray btn-sm" onclick="ADM.editCloud()">高级设置</button></div>' +
       '<div class="tips"><b>怎么用</b>：把网页链接发到工区群，或扫下面「团队码」，工友打开就是同一份台账，' +
       '<b>不用注册、不用填任何英文</b>。你在这里加模块、改区域/站点/阈值，全员立即生效；' +
@@ -367,7 +371,10 @@ window.ADM = (function () {
   function joinCode() {
     var link = S.makeJoinLink();
     window._joinLink = link;
-    var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=' + encodeURIComponent(link);
+    /* 默认仓用仓库自带的二维码图片，不依赖境外二维码服务；自定义仓才动态生成 */
+    var qr = S.status().isDefault
+      ? 'team_qr.png?v=' + (window.CFG.BUILD || '1')
+      : 'https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=' + encodeURIComponent(link);
     U.sheet('团队码 · 发给工区',
       '<div class="qr-box"><img src="' + qr + '" alt="团队码"></div>' +
       '<div class="tips" style="text-align:center">工友用<b>微信扫上面二维码</b>（或点链接），打开就是<b>同一份台账</b>，' +
