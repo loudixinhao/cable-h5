@@ -17,7 +17,7 @@ window.S = (function () {
   var data = null;
   var cloudOn = false, syncing = false, pending = false, dirty = false;
   var cloudError = '', lastSync = 0;
-  var pushTimer = null, pollTimer = null, retryTimer = null, retryIdx = 0;
+  var pushTimer = null, pollTimer = null, retryTimer = null, retryIdx = 0, inflight = null;
   var listeners = [];
 
   function now() { return new Date().toISOString(); }
@@ -122,7 +122,42 @@ window.S = (function () {
     return fetch(url, opt).then(function (r) {
       clearTimeout(timer);
       return r;
-    }, function (e) { clearTimeout(timer); throw e; });
+    }, function (e) {
+      clearTimeout(timer);
+      /* 超时掐断会报 "signal is aborted without reason"，翻成一线职工看得懂的话 */
+      if ((ctl && ctl.signal.aborted) ||
+          (e && /aborted without reason|AbortError/i.test((e.name || '') + ' ' + (e.message || '')))) {
+        throw new Error('连接云端超时（网络慢或访问不到），会自动重试');
+      }
+      if (e && /Failed to fetch|NetworkError|Load failed|Network request failed/i.test(e.message || '')) {
+        throw new Error('连不上云端（网络不可用或访问受限），会自动重试');
+      }
+      throw e;
+    });
+  }
+
+  /* 双路竞速：跨境链路偶发单连接丢包。
+     第一路 350ms 内没回来才发第二路，谁先成功用谁；正常情况只发一次。 */
+  function raceFetch(urls, makeOpt) {
+    return new Promise(function (resolve, reject) {
+      var finished = false, errors = 0, firstErr = null;
+      function fail(e) {
+        if (finished) return;
+        errors++; if (!firstErr) firstErr = e;
+        if (errors >= urls.length) { finished = true; reject(firstErr); }
+      }
+      urls.forEach(function (u, i) {
+        var go = function () {
+          if (finished) return;
+          fetchT(u, makeOpt()).then(function (r) {
+            if (finished) return;
+            if (r.ok || r.status === 404) { finished = true; resolve(r); }
+            else fail(new Error('云端响应 ' + r.status));
+          }, fail);
+        };
+        if (i === 0) go(); else setTimeout(go, window.CFG.RACE_GAP || 350);
+      });
+    });
   }
   function cloudGet() {
     var c = cloudCfg();
@@ -135,11 +170,17 @@ window.S = (function () {
         .then(function (arr) { return (arr && arr[0] && arr[0].content) || null; });
     }
     if (!c.bin) return Promise.reject(new Error('未设置团队数据仓'));
-    return fetchT(window.CFG.CLOUD_API + c.bin + '?t=' + Date.now(), { cache: 'no-store', headers: { Accept: 'application/json' } })
-      .then(function (r) { if (r.status === 404) return null; if (!r.ok) throw new Error('云端读取失败 ' + r.status); return r.json(); })
-      .then(function (o) {
-        return (o && typeof o === 'object' && (o.schema || o.records || o.checks || o.notes)) ? o : null;
-      });
+    var base = window.CFG.CLOUD_API + c.bin, t = Date.now();
+    var urls = [base + '?t=' + t, base + '?t=' + t + '&r=2'];
+    return raceFetch(urls, function () {
+      return { cache: 'no-store', headers: { Accept: 'application/json' } };
+    }).then(function (r) {
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error('云端读取失败 ' + r.status);
+      return r.json();
+    }).then(function (o) {
+      return (o && typeof o === 'object' && (o.schema || o.records || o.checks || o.notes)) ? o : null;
+    });
   }
   function cloudSet(payload) {
     var c = cloudCfg();
@@ -152,9 +193,13 @@ window.S = (function () {
         body: JSON.stringify({ id: window.CFG.CLOUD_DOC_ID, content: payload, updated_at: now() })
       }).then(function (r) { if (!r.ok) throw new Error('云端写入失败 ' + r.status); return true; });
     }
-    return fetchT(window.CFG.CLOUD_API + c.bin, {
-      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-    }).then(function (r) { if (!r.ok) throw new Error('云端写入失败 ' + r.status); return true; });
+    var u = window.CFG.CLOUD_API + c.bin, body = JSON.stringify(payload);
+    return raceFetch([u, u], function () {
+      return { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: body };
+    }).then(function (r) {
+      if (r.status && r.status >= 400) throw new Error('云端写入失败 ' + r.status);
+      return true;
+    });
   }
 
   /* ---------- 同步 ---------- */
@@ -183,7 +228,8 @@ window.S = (function () {
   function push(retries) {
     retries = retries || 0;
     if (!cloudCfg().enabled) return Promise.resolve(false);
-    if (syncing) { pending = true; dirty = true; return Promise.resolve(false); }
+    /* 自动重试与手动「立即同步」撞车时，共用同一个结果，避免手动同步被误报失败 */
+    if (syncing) { pending = true; dirty = true; return inflight || Promise.resolve(false); }
     syncing = true; emit();
     function attempt(n) {
       return cloudGet().then(function (remote) {
@@ -202,9 +248,10 @@ window.S = (function () {
         });
       });
     }
-    return attempt(0).catch(function (e) {
+    inflight = attempt(0).catch(function (e) {
       dirty = true; pending = true; markFail(e); return false;
-    }).then(function (r) { syncing = false; emit(); return r; });
+    }).then(function (r) { syncing = false; inflight = null; emit(); return r; });
+    return inflight;
   }
 
   /* 拉：只同步别人的新改动，不写回云端 */
@@ -407,6 +454,95 @@ window.S = (function () {
     save();
   }
 
+  /* ---------- 进度码：完全不依赖网络的团队同步兜底 ----------
+     云端连不上时，谁打完勾点「生成进度码」发到工区群，别人粘贴合并即可；
+     按时间戳后写优先合并，不会覆盖本机更新的勾。 */
+  function b64e(s) {
+    return btoa(unescape(encodeURIComponent(s || '')))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64d(s) {
+    s = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    return decodeURIComponent(escape(atob(s)));
+  }
+  function stationList() {
+    var out = [];
+    (data.schema.lines || []).forEach(function (l) {
+      (l.stations || []).forEach(function (n) { out.push(n); });
+    });
+    return out;
+  }
+  function zonesOfStation(st) {
+    var s = data.schema, ov = s.stationZones || {};
+    return (ov[st] && ov[st].length) ? ov[st] : (s.zones || []);
+  }
+  function secOf(iso) {
+    /* 必须向下取整：四舍五入会让进度码的时间戳"看起来比本机后续操作还新"，
+       从而把刚取消的勾又覆盖回来 */
+    var n = new Date(iso).getTime();
+    return isNaN(n) ? Math.floor(Date.now() / 1000) : Math.floor(n / 1000);
+  }
+  function encodeCycle(cycKey) {
+    var st = stationList(), items = [];
+    var ck = (data.checks || {})[cycKey] || {};
+    Object.keys(ck).forEach(function (k) {
+      var v = ck[k]; if (!v) return;
+      var p = k.split('||'), si = st.indexOf(p[0]);
+      if (si < 0) return;
+      var zi = zonesOfStation(p[0]).indexOf(p[1]);
+      if (zi < 0) return;
+      items.push('C' + si + '.' + zi + '.' + (v.on ? 1 : 0) + '.' + secOf(v.at) + '.' + b64e(v.by || ''));
+    });
+    var nt = (data.notes || {})[cycKey] || {};
+    Object.keys(nt).forEach(function (name) {
+      var v = nt[name]; if (!v || !v.text) return;
+      var si = st.indexOf(name); if (si < 0) return;
+      items.push('N' + si + '.' + secOf(v.at) + '.' + b64e(v.by || '') + '.' + b64e(v.text));
+    });
+    return b64e(['LD1', cycKey, data.schema.workshop || '', items.join(';')].join('|'));
+  }
+  function applyCycleCode(txt) {
+    var raw;
+    try { raw = b64d(String(txt || '').trim()); } catch (e) { throw new Error('进度码格式不对，请复制完整'); }
+    var p = raw.split('|');
+    if (p[0] !== 'LD1' || !p[1]) throw new Error('进度码格式不对，请复制完整');
+    var cycKey = p[1], st = stationList(), n = 0;
+    if (!data.checks[cycKey]) data.checks[cycKey] = {};
+    if (!data.notes[cycKey]) data.notes[cycKey] = {};
+    (p[3] || '').split(';').forEach(function (item) {
+      if (!item) return;
+      var f = item.split('.'), si, cur, at;
+      try {
+        if (item.charAt(0) === 'C' && f.length >= 5) {
+          si = parseInt(f[0].slice(1), 10);
+          if (isNaN(si) || !st[si]) return;
+          var zi = parseInt(f[1], 10), zones = zonesOfStation(st[si]);
+          if (isNaN(zi) || !zones[zi]) return;
+          var k = st[si] + '||' + zones[zi];
+          at = new Date(parseInt(f[3], 10) * 1000).toISOString();
+          cur = data.checks[cycKey][k];
+          if (!cur || new Date(at) > new Date(cur.at || 0)) {
+            data.checks[cycKey][k] = { on: f[2] === '1', at: at, by: b64d(f[4]) };
+            n++;
+          }
+        } else if (item.charAt(0) === 'N' && f.length >= 4) {
+          si = parseInt(f[0].slice(1), 10);
+          if (isNaN(si) || !st[si]) return;
+          at = new Date(parseInt(f[1], 10) * 1000).toISOString();
+          cur = data.notes[cycKey][st[si]];
+          if (!cur || new Date(at) > new Date(cur.at || 0)) {
+            data.notes[cycKey][st[si]] = { text: b64d(f[3]), at: at, by: b64d(f[2]) };
+            n++;
+          }
+        }
+      } catch (e) { /* 单条坏了不影响其余 */ }
+    });
+    if (!n) return 0;                  // 没有比本机更新的内容，视为正常，不算失败
+    save();
+    return n;
+  }
+
   function exportJson() { return JSON.stringify(data, null, 2); }
   function importJson(txt) {
     var o = JSON.parse(txt);
@@ -415,6 +551,9 @@ window.S = (function () {
     (o.records || []).forEach(function (r) { r._at = r._at || now(); r._by = r._by || member(); });
     data = normalize(o); localWrite(); schedulePush();
   }
+
+  /* 模块加载即读本地数据：页面可以立刻渲染，不必等云端（弱网时云端可能要等 30 秒） */
+  data = localRead();
 
   return {
     init: init, get: get, schema: schema, records: records, checks: checks, notes: notes,
@@ -426,6 +565,7 @@ window.S = (function () {
     addRecord: addRecord, updateRecord: updateRecord, delRecord: delRecord,
     clearAllRecords: clearAllRecords, setSchema: setSchema, resetAll: resetAll,
     toggleCheck: toggleCheck, setCheck: setCheck, setNote: setNote, clearCycle: clearCycle,
+    encodeCycle: encodeCycle, applyCycleCode: applyCycleCode,
     exportJson: exportJson, importJson: importJson
   };
 })();
