@@ -48,14 +48,20 @@ window.ADM = (function () {
       '<button class="btn btn-line btn-sm" onclick="ADM.editSettings()">车间 / 站点 / 阈值 / 周期 / 电话 / 口令</button>' +
       '<div class="tips">当前：' + U.esc(s.workshop) + ' · ' + U.allStations(s).length + ' 站 · 阈值 ' + s.threshold + ' MΩ · 周期 ' + s.testDay + '日' + s.testHour + ':00 · 审批 ' + U.esc(s.tempPhone) + '</div></div>' +
 
-      '<div class="card"><div class="card-title">团队云同步（多人共享同一份台账）</div>' +
-      '<div class="row"><span class="muted">状态</span><span class="bold">' +
-      (st.enabled ? (st.cloudOn ? '已连接云端' : '已开启，未连通') : '未开启（本机缓存）') + '</span></div>' +
+      '<div class="card"><div class="card-title">团队共享（默认已开启 · 零配置）</div>' +
+      '<div class="row"><span class="muted">连接状态</span><span class="bold">' +
+      (!st.enabled ? '本机模式' : (st.cloudOn ? '已连接 · 全员共用' : (st.error ? '离线（本地已保存）' : '连接中'))) + '</span></div>' +
+      '<div class="row"><span class="muted">数据仓</span><span class="bold">' +
+      (st.isDefault ? '工区默认共享仓' : (st.provider === 'supabase' ? '自建云数据库' : '自定义共享仓')) + '</span></div>' +
+      '<div class="row"><span class="muted">待上传改动</span><span class="bold">' + (st.pending ? '有（联网自动补传）' : '无') + '</span></div>' +
       (st.error ? '<div class="badge badge-bad" style="margin-top:6px">' + U.esc(st.error) + '</div>' : '') +
-      '<button class="btn btn-line btn-sm" style="margin-top:10px" onclick="ADM.editCloud()">配置云数据库</button> ' +
-      (st.enabled ? '<button class="btn btn-line btn-sm" onclick="ADM.joinCode()">生成团队加入码</button>' : '') +
-      '<div class="tips">开启后：你在这里加的模块/改的设置，工区所有人打开就能看到；各人录入的数据也汇总到一起。' +
-      '<br>「团队加入码」生成二维码，工友用微信扫一下即自动连上，不用自己填英文。</div></div>' +
+      '<div style="margin-top:10px">' +
+      '<button class="btn btn-line btn-sm" onclick="ADM.joinCode()">生成团队码（发工区群）</button> ' +
+      '<button class="btn btn-line btn-sm" onclick="ADM.reloadCloud()">立即同步</button> ' +
+      '<button class="btn btn-gray btn-sm" onclick="ADM.editCloud()">高级设置</button></div>' +
+      '<div class="tips"><b>怎么用</b>：把网页链接发到工区群，或扫下面「团队码」，工友打开就是同一份台账，' +
+      '<b>不用注册、不用填任何英文</b>。你在这里加模块、改区域/站点/阈值，全员立即生效；' +
+      '多人同时打勾不会互相覆盖，断网也能用，联网自动补传。</div></div>' +
 
       '<div class="card"><div class="card-title">数据管理</div>' +
       '<div class="row"><span class="muted">当前记录</span><span class="bold">' + S.records().length + ' 条</span></div>' +
@@ -305,43 +311,69 @@ window.ADM = (function () {
     APP.go('admin'); U.toast('本周期打勾已清空');
   }
 
-  /* 云同步 */
+  /* 团队共享高级设置：默认零配置，可切换自建云数据库 */
   function editCloud() {
-    var c = S.cloudCfg();
-    U.sheet('配置团队云数据库',
-      '<div class="tips" style="margin-bottom:10px">填一次即可。工友不用填：在后台点「生成团队加入码」，他们扫码自动连上。<br>' +
-      '需在 supabase.com 免费建项目，SQL 编辑器里运行建表语句（见使用说明）。</div>' +
-      '<div class="row"><span>启用云同步</span><label class="switch"><input id="cEnabled" type="checkbox"' + (c.enabled ? ' checked' : '') + '><i></i></label></div>' +
-      '<div class="field" style="margin-top:10px"><label>Project URL</label><input id="cUrl" type="text" value="' + U.esc(c.url) + '" placeholder="https://xxxx.supabase.co"></div>' +
+    var c = S.cloudCfg(), st = S.status();
+    U.sheet('团队共享 · 高级设置',
+      '<div class="tips" style="margin-bottom:10px">默认已配置好<b>工区共享仓</b>，无需任何设置，打开同一链接即多人共用。' +
+      '下面是可选的高级项：换一个数据仓、或改用自己注册的云数据库。</div>' +
+      '<div class="divider"></div>' +
+      '<div class="field"><label>团队共享</label>' +
+      '<div class="row"><span>' + (c.enabled ? '已开启（推荐）' : '已关闭，仅本机') + '</span>' +
+      '<button class="btn btn-gray btn-xs" onclick="ADM.toggleCloud()">' + (c.enabled ? '切换为本机模式' : '开启团队共享') + '</button></div></div>' +
+      '<div class="divider"></div>' +
+      '<div class="field"><label>共享仓 ID（换仓用，一般不用改）</label>' +
+      '<input id="cBin" type="text" value="' + U.esc(st.bin) + '" placeholder="默认共享仓"></div>' +
+      '<button class="btn btn-line btn-sm" onclick="ADM.saveTeamBin()">保存并连接</button> ' +
+      '<button class="btn btn-gray btn-sm" onclick="ADM.useDefault()">恢复工区默认仓</button>' +
+      '<div class="divider"></div>' +
+      '<div class="tips" style="margin-bottom:8px"><b>可选：自建云数据库</b>（需自己注册 Supabase，' +
+      '适合想把数据放在自己账号下的情况；不填就用上面的免费共享仓，功能完全一样）</div>' +
+      '<div class="field"><label>Project URL</label><input id="cUrl" type="text" value="' + U.esc(c.url) + '" placeholder="https://xxxx.supabase.co"></div>' +
       '<div class="field"><label>anon public key</label><input id="cKey" type="text" value="' + U.esc(c.key) + '" placeholder="eyJ..."></div>' +
-      '<div class="field"><label>表名</label><input id="cTable" type="text" value="' + U.esc(window.CFG.CLOUD_TABLE) + '" disabled></div>' +
-      '<button class="btn" onclick="ADM.saveCloud()">保存并连接</button>');
+      '<div class="tips">自建需建表 app_data（列：id text 主键、content jsonb、updated_at timestamptz），并开启 RLS 匿名读写策略。</div>' +
+      '<button class="btn" style="margin-top:8px" onclick="ADM.saveCloud()">保存并连接自建库</button>');
+  }
+  function toggleCloud() {
+    var c = S.cloudCfg();
+    var ov = { provider: c.provider, bin: c.bin, url: c.url, key: c.key, enabled: !c.enabled };
+    localStorage.setItem('ld_cloud_override', JSON.stringify(ov));
+    U.closeSheet(); U.toast(ov.enabled ? '已开启团队共享' : '已切换为本机模式');
+    S.reload().then(function () { APP.go('admin'); });
+  }
+  function saveTeamBin() {
+    var bin = (document.getElementById('cBin') || {}).value.trim();
+    if (!bin) { U.toast('请填写共享仓 ID'); return; }
+    U.closeSheet(); U.toast('正在连接…');
+    S.setTeamBin(bin).then(function () { APP.go('admin'); U.toast(S.status().cloudOn ? '已连接新共享仓' : '已保存，暂未连通'); });
+  }
+  function useDefault() {
+    U.closeSheet(); U.toast('正在恢复…');
+    S.useDefaultTeam().then(function () { APP.go('admin'); U.toast('已恢复工区默认共享仓'); });
   }
   function saveCloud() {
-    var url = document.getElementById('cUrl').value.trim();
-    var key = document.getElementById('cKey').value.trim();
-    var en = document.getElementById('cEnabled').checked;
-    S.setCloud(url, key, en);
-    U.closeSheet(); U.toast('已保存，正在连接…');
-    S.reload().then(function () { APP.go('admin'); U.toast(S.status().cloudOn ? '云端已连接' : '已保存，云端未连通（先用本机）'); });
+    var url = (document.getElementById('cUrl') || {}).value.trim();
+    var key = (document.getElementById('cKey') || {}).value.trim();
+    if (!url || !key) { U.toast('请填写 URL 和 key'); return; }
+    U.closeSheet(); U.toast('正在连接自建库…');
+    S.setCloud(url, key, true).then(function () { APP.go('admin'); U.toast(S.status().cloudOn ? '自建库已连接' : '未连通，已本地保存'); });
   }
   function reloadCloud() {
-    U.toast('正在从云端刷新…');
-    S.reload().then(function (ok) { APP.go('admin'); U.toast(ok ? '已刷新' : '未连到云端'); });
+    U.toast('正在同步…');
+    S.syncNow().then(function () { APP.go('admin'); U.toast(S.status().cloudOn ? '已同步' : '未连到云端，数据已存本机'); });
   }
 
-  /* 团队加入码 */
+  /* 团队码：把当前页面链接生成二维码，工友扫码即共用同一份台账 */
   function joinCode() {
-    if (!S.cloudCfg().enabled) { U.toast('请先开启云同步'); return; }
     var link = S.makeJoinLink();
     window._joinLink = link;
     var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=' + encodeURIComponent(link);
-    U.sheet('团队加入码',
-      '<div class="qr-box"><img src="' + qr + '" alt="加入码"></div>' +
-      '<div class="tips" style="text-align:center">工友用<b>微信扫上面二维码</b>，打开后自动连上同一份台账，无需填任何英文。<br>' +
-      '以后你在后台加的模块、改的设置，他们都能看到。</div>' +
+    U.sheet('团队码 · 发给工区',
+      '<div class="qr-box"><img src="' + qr + '" alt="团队码"></div>' +
+      '<div class="tips" style="text-align:center">工友用<b>微信扫上面二维码</b>（或点链接），打开就是<b>同一份台账</b>，' +
+      '不用注册、不用填任何英文。<br>以后你加的模块、改的区域/站点，他们都能看到。</div>' +
       '<div class="divider"></div>' +
-      '<button class="btn btn-line btn-sm" style="width:100%" onclick="U.copy(window._joinLink)">复制加入链接</button>' +
+      '<button class="btn btn-line btn-sm" style="width:100%" onclick="U.copy(window._joinLink)">复制团队链接发到群里</button>' +
       '<div class="tips" style="word-break:break-all;font-size:11px;margin-top:8px">' + U.esc(link) + '</div>');
   }
 
@@ -363,8 +395,8 @@ window.ADM = (function () {
     catch (e) { U.toast('导入失败：' + e.message); }
   }
   function clearRecords() {
-    if (!confirm('确认清空全部记录？此操作不可恢复（建议先导出备份）。')) return;
-    var d = S.get(); d.records = []; S.save(); APP.go('admin'); U.toast('已清空记录');
+    if (!confirm('确认清空全部记录？此操作会对全员生效（建议先导出备份）。')) return;
+    S.clearAllRecords(); APP.go('admin'); U.toast('已清空记录（全员同步生效）');
   }
   function resetModules() {
     if (!confirm('恢复默认模块模板？你自定义新增的模块会被覆盖（记录保留）。')) return;
@@ -382,6 +414,7 @@ window.ADM = (function () {
     editZones: editZones, loadStationZones: loadStationZones, saveStationZones: saveStationZones,
     resetStationZones: resetStationZones, saveZones: saveZones, clearChecks: clearChecks,
     editCloud: editCloud, saveCloud: saveCloud, reloadCloud: reloadCloud, joinCode: joinCode,
+    toggleCloud: toggleCloud, saveTeamBin: saveTeamBin, useDefault: useDefault,
     exportData: exportData, importData: importData, doImport: doImport,
     clearRecords: clearRecords, resetModules: resetModules
   };
