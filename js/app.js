@@ -263,6 +263,14 @@ window.APP = (function () {
       '<div style="margin-top:8px"><button class="btn btn-line btn-sm" onclick="BOARD.diagnose()">运行同步自检</button> ' +
       '<button class="btn btn-gray btn-sm" onclick="BOARD.restoreTeam()">恢复默认共享仓</button></div></div>' +
 
+      '<div class="card"><div class="card-title">进度码（没网也能同步）</div>' +
+      '<div class="tips">云端连不上时的保底办法：谁打完勾点「生成进度码」发工区群，' +
+      '别人点「粘贴工友的进度码」合并即可。<b>完全不依赖网络</b>，按时间先后合并，不会互相覆盖；' +
+      '合并后一旦云端通了，还会自动补传。</div>' +
+      '<div style="margin-top:8px">' +
+      '<button class="btn btn-line btn-sm" onclick="BOARD.genCode()">生成进度码发群</button> ' +
+      '<button class="btn btn-line btn-sm" onclick="BOARD.pasteCode()">粘贴工友的进度码</button></div></div>' +
+
       '<div class="card"><div class="card-title">管理后台</div>' +
       '<div class="tips" style="margin-bottom:8px">新增模块、增删字段、改站点与阈值、管理团队共享、生成团队码。</div>' +
       '<button class="btn" onclick="APP.go(\'admin\')">进入管理后台</button></div>' +
@@ -302,9 +310,10 @@ window.APP = (function () {
       lastFp = fp;
       render();
     });
+    /* 先秒开本地台账，云同步放后台跑：弱网下云端可能要等 30 秒，不能让用户干等白屏 */
+    go('home');
     S.init().then(function (r) {
       if (r.joined) setTimeout(function () { U.toast('已加入团队云台账'); }, 400);
-      go('home');
       if (r.cloud) render();
     });
   }
