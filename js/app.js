@@ -233,14 +233,20 @@ window.APP = (function () {
       '<div class="tips">默认分区：' + U.esc((s.zones || []).join('、') || '未设置') +
       '（管理员可在后台按站调整）。每站分区域打勾盯控完成情况。</div>';
     document.getElementById('view-mine').innerHTML =
-      '<div class="card"><div class="card-title">' + U.esc(s.workshop) + '</div>' +
+      '<div class="card"><div class="card-title">' + U.esc(s.workshop) + ' · 团队协作</div>' +
       '<div class="row"><span class="muted">运行模式</span><span class="bold">' +
-      (st.enabled ? (st.cloudOn ? '团队云同步' : '云同步（未连通）') : '本机缓存') + '</span></div>' +
-      (st.error ? '<div class="badge badge-bad">' + U.esc(st.error) + '</div>' : '') +
-      '<div class="tips">' + (st.enabled ? '数据汇总到同一份台账，管理员在后台改的配置全员生效。' : '数据仅存本机。让管理员开启云同步即可多人共享。') + '</div></div>' +
+      (!st.enabled ? '本机缓存' : (st.cloudOn ? '团队云台账 · 已连接' : (st.error ? '离线（本地已保存）' : '连接中'))) + '</span></div>' +
+      (st.error ? '<div class="badge badge-bad" style="margin-top:6px">' + U.esc(st.error) + '</div>' : '') +
+      '<div class="row"><span class="muted">我的署名</span><span class="bold link" style="color:#1989fa" onclick="BOARD.editMember()">' +
+      U.esc(st.member || '点此填写姓名') + ' ›</span></div>' +
+      '<div class="tips">' + (st.enabled
+        ? '全工区共用同一份台账：你打的勾、工友打的勾会自动汇总到一起。断网时照常使用，联网后自动补传。'
+        : '数据仅存本机。到管理后台开启团队共享即可多人共用。') + '</div>' +
+      '<button class="btn btn-line btn-sm" style="margin-top:10px" onclick="S.syncNow().then(function(){APP.render();U.toast(\'已同步\')})">立即同步</button>' +
+      '</div>' +
 
       '<div class="card"><div class="card-title">管理后台</div>' +
-      '<div class="tips" style="margin-bottom:8px">新增模块、增删字段、改站点与阈值、配置云同步、生成团队加入码。</div>' +
+      '<div class="tips" style="margin-bottom:8px">新增模块、增删字段、改站点与阈值、管理团队共享、生成团队码。</div>' +
       '<button class="btn" onclick="APP.go(\'admin\')">进入管理后台</button></div>' +
 
       '<div class="card"><div class="card-title">车间站点（' + U.allStations(s).length + ' 站）</div>' + stations +
@@ -257,22 +263,37 @@ window.APP = (function () {
       '3. 每站的「记录(可选)」只是备注，<b>不填也能打勾</b>；要录详细绝缘数据用「新增」页。<br>' +
       '4. 汇总页按区域统计完成率、列出未完成的区域，可一键复制上报文本。<br>' +
       '5. 管理员进后台：区域管理可加减区域名、按站单独设置；还能加模块、加字段、改阈值。<br>' +
-      '6. 开启云同步后生成「团队加入码」，工友微信扫码即连上同一份进度，多人打勾实时汇总。' +
+      '6. <b>已默认开启团队共享</b>：把这个网页链接发到工区群，或扫后台「团队码」，' +
+      '大家打开就是同一份进度；先到「我的」填好姓名，打勾会署名，工长能看谁完成的。<br>' +
+      '7. 多人同时打勾不会互相覆盖；断网也能用，联网后自动补传。' +
       '</div></div>';
   }
 
   /* ---------- 启动 ---------- */
+  function currentView() { return view; }
+  var lastFp = '';
+
   function init() {
+    /* 云端拉到别人的改动时自动刷新：跳过「新增」与弹层，避免打断填写；
+       用数据指纹 + 关键状态做差量判断，避免轮询造成无谓重绘、打断滚动 */
+    S.onChange(function () {
+      if (view === 'add' || document.querySelector('#modalRoot .sheet')) return;
+      var st = S.status();
+      var fp = JSON.stringify([S.records(), S.checks(), S.notes(), st.cloudOn, st.syncing, st.pending, st.enabled, st.error]);
+      if (fp === lastFp) return;
+      lastFp = fp;
+      render();
+    });
     S.init().then(function (r) {
       if (r.joined) setTimeout(function () { U.toast('已加入团队云台账'); }, 400);
       go('home');
-      /* 云端连上后自动刷新一次首页 */
       if (r.cloud) render();
     });
   }
 
   return {
-    go: go, init: init, render: render, filter: filter, pickMod: pickMod,
+    go: go, init: init, render: render, currentView: currentView,
+    filter: filter, pickMod: pickMod,
     clearStationFilter: clearStationFilter, showStationRecords: showStationRecords,
     openAddWithPreset: openAddWithPreset, cancelEdit: cancelEdit,
     save: save, saveEdit: saveEdit, detail: detail, editRec: editRec, delRec: delRec,
