@@ -6,9 +6,14 @@ window.CFG = {
   TEST_DAY: 25,                      // 周期起止日
   TEST_HOUR: 16,                     // 周期起止时刻(16:00)
   INSULATION_THRESHOLD: 1,           // 绝缘合格阈值 MΩ，低于标红
-  STORAGE_KEY: 'ldwork_v3',          // 本地数据键
-  CLOUD_TABLE: 'app_data',           // 云端表名（单条文档共享）
-  CLOUD_DOC_ID: 'main'               // 云端文档ID
+  STORAGE_KEY: 'ldwork_v3',          // 本地数据键（保持不变，旧数据自动继承）
+  // ---- 团队云端共享（默认零配置：打开同一链接即同一份台账）----
+  TEAM_BIN: 'b6208609fb2ef6f728b5', // 预建的工区共享数据仓
+  CLOUD_API: 'https://api.npoint.io/',
+  POLL_MS: 8000,                     // 自动同步间隔（毫秒）
+  SYNC_TIMEOUT: 9000,               // 单次请求超时
+  CLOUD_TABLE: 'app_data',           // 自建模式云端表名（单条文档共享）
+  CLOUD_DOC_ID: 'main'               // 自建模式云端文档ID
 };
 
 /* 字段类型清单（后台新增字段时可选） */
@@ -53,8 +58,8 @@ window.DEFAULT_SCHEMA = {
   // 区域盯控：默认分区模板（管理员可改），按站可单独覆盖
   zones: ['一区', '二区', '三区'],
   stationZones: {},   // 例：{ '壶天站': ['上行','下行','咽喉'] }；未设置则用 zones
-  // 团队云配置（由管理员在后台填写；工友扫「加入码」自动获得）
-  cloud: { enabled: false, url: '', key: '' },
+  // 团队共享：默认开启、零配置（打开同一链接即同一份台账）
+  cloud: { enabled: true, provider: 'npoint', url: '', key: '' },
   modules: [
     {
       id: 'm_insulation', name: '电缆绝缘测试', icon: '绝', desc: '25日16:00周期全覆盖',
