@@ -233,17 +233,35 @@ window.APP = (function () {
       '<div class="tips">默认分区：' + U.esc((s.zones || []).join('、') || '未设置') +
       '（管理员可在后台按站调整）。每站分区域打勾盯控完成情况。</div>';
     document.getElementById('view-mine').innerHTML =
+      (st.wechat ? '<div class="card" style="background:#fff8e6"><div class="card-title">在微信里打开？</div>' +
+        '<div class="tips">微信会缓存旧版网页，可能造成「同步功能一直不更新」。请点右上角「···」→「在浏览器打开」，' +
+        '用手机浏览器打开最新链接使用；群里那条链接也重新打开一次。</div></div>' : '') +
+
       '<div class="card"><div class="card-title">' + U.esc(s.workshop) + ' · 团队协作</div>' +
       '<div class="row"><span class="muted">运行模式</span><span class="bold">' +
-      (!st.enabled ? '本机缓存' : (st.cloudOn ? '团队云台账 · 已连接' : (st.error ? '离线（本地已保存）' : '连接中'))) + '</span></div>' +
+      (!st.enabled ? '本机模式（不共享）' : (st.cloudOn ? '团队云台账 · 已连接' : (st.error ? '云端未连通' : '连接中'))) + '</span></div>' +
+      '<div class="row"><span class="muted">程序版本</span><span class="bold">v' + U.esc(st.build || '旧版') + '</span></div>' +
       (st.error ? '<div class="badge badge-bad" style="margin-top:6px">' + U.esc(st.error) + '</div>' : '') +
+      (!st.enabled ? '<div class="badge badge-bad" style="margin-top:6px">这台手机被设为「本机模式」，数据不会传给工友</div>' : '') +
       '<div class="row"><span class="muted">我的署名</span><span class="bold link" style="color:#1989fa" onclick="BOARD.editMember()">' +
       U.esc(st.member || '点此填写姓名') + ' ›</span></div>' +
       '<div class="tips">' + (st.enabled
         ? '全工区共用同一份台账：你打的勾、工友打的勾会自动汇总到一起。断网时照常使用，联网后自动补传。'
-        : '数据仅存本机。到管理后台开启团队共享即可多人共用。') + '</div>' +
-      '<button class="btn btn-line btn-sm" style="margin-top:10px" onclick="S.syncNow().then(function(){APP.render();U.toast(\'已同步\')})">立即同步</button>' +
-      '</div>' +
+        : '数据仅存本机，工友看不到。点下面「恢复默认共享仓」即可回到团队台账。') + '</div>' +
+      '<div style="margin-top:10px">' +
+      '<button class="btn btn-line btn-sm" onclick="S.syncNow().then(function(ok){APP.render();U.toast(ok?\'已同步\':\'同步未成功，请点同步自检\')})">立即同步</button> ' +
+      (!st.enabled ? '<button class="btn btn-sm" onclick="BOARD.restoreTeam()">恢复默认共享仓</button>' : '') +
+      '</div></div>' +
+
+      '<div class="card"><div class="card-title">同步自检（连不上就点这里）</div>' +
+      '<div class="row"><span class="muted">数据仓</span><span class="bold">' +
+      (st.isDefault ? '工区默认共享仓' : (st.provider === 'supabase' ? '自建云数据库' : '自定义仓 ' + U.esc(st.bin))) + '</span></div>' +
+      '<div class="row"><span class="muted">云端状态</span><span class="bold">' +
+      (st.cloudOn ? '已连通' : '未连通') + '</span></div>' +
+      '<div class="tips">两台手机各点一次自检，比对「数据仓编号」和「云端数据指纹」是否相同；' +
+      '把自检结果截图发出来，能直接定位是没连上、连错仓，还是缓存了旧版。</div>' +
+      '<div style="margin-top:8px"><button class="btn btn-line btn-sm" onclick="BOARD.diagnose()">运行同步自检</button> ' +
+      '<button class="btn btn-gray btn-sm" onclick="BOARD.restoreTeam()">恢复默认共享仓</button></div></div>' +
 
       '<div class="card"><div class="card-title">管理后台</div>' +
       '<div class="tips" style="margin-bottom:8px">新增模块、增删字段、改站点与阈值、管理团队共享、生成团队码。</div>' +
