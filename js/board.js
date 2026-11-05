@@ -27,7 +27,7 @@ window.BOARD = (function () {
         (st.pending ? ' · 有改动待上传' : '');
     } else {
       label = st.error ? '云端未连通（本地已保存）' : '正在连接云端…';
-      sub = '本地改动已保存，会自动重试补传，不影响现在打勾';
+      sub = '本地已保存、会自动重试；也可用「我的 → 进度码」在群里同步';
     }
     /* 版本号常显：截图就能看出这台手机是不是加载了旧版 */
     var subHtml = U.esc(sub) + ' <span class="muted">· v' + U.esc(st.build || '旧版') + '</span>';
@@ -70,6 +70,7 @@ window.BOARD = (function () {
       var html = r.join('') + '<div class="divider"></div>' +
         '<div class="tips">两台手机都点一次「同步自检」，<b>数据仓编号</b>和<b>云端数据指纹</b>相同，才是同一份台账。<br>' +
         (d.wechat ? '<b>提示：</b>微信里可能一直加载旧版，建议点右上角「···」→「在浏览器打开」。<br>' : '') +
+        (d.ok ? '' : '<b>连不上也能用：</b>到「我的 → 进度码」生成进度码发工区群，工友粘贴即可合并，完全不依赖网络。<br>') +
         '把这一屏截图发出来，就能判断是没连上云端、连错仓，还是手机缓存了旧版。</div>' +
         '<div style="margin-top:10px">' +
         '<button class="btn btn-line btn-sm" onclick="S.syncNow().then(function(){BOARD.diagnose()})">立即同步并复测</button> ' +
@@ -77,6 +78,38 @@ window.BOARD = (function () {
         '<button class="btn btn-gray btn-sm" onclick="U.closeSheet()">关闭</button></div>';
       U.sheet('同步自检', html);
     });
+  }
+
+  /* ---------- 进度码：断网/连不上云端时的团队同步兜底 ---------- */
+  function genCode() {
+    var code = S.encodeCycle(key());
+    var cnt = Object.keys((S.get().checks || {})[key()] || {}).length;
+    U.sheet('本周期进度码 · 发到工区群',
+      '<div class="tips" style="margin-bottom:8px">云端连不上也能用：复制下面整段发到工区微信群，' +
+      '工友点「粘贴工友的进度码」合并即可。按时间先后合并，<b>不会覆盖别人更新的勾</b>。<br>' +
+      '本码含 <b>' + cnt + '</b> 个区域标记，共 ' + code.length + ' 字符。</div>' +
+      '<textarea id="codeBox" style="width:100%;min-height:130px;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:11px;word-break:break-all">' + U.esc(code) + '</textarea>' +
+      '<div style="margin-top:8px">' +
+      '<button class="btn" onclick="U.copy(document.getElementById(\'codeBox\').value)">复制进度码发群</button> ' +
+      '<button class="btn btn-gray btn-sm" onclick="U.closeSheet()">关闭</button></div>');
+  }
+  function pasteCode() {
+    U.sheet('粘贴工友的进度码',
+      '<div class="tips" style="margin-bottom:8px">把群里工友发的进度码整段粘贴进来，点合并。' +
+      '只并入比本机更新的打勾和备注，<b>不会覆盖你已经完成的</b>。合并后若云端通了会自动上传。</div>' +
+      '<textarea id="pasteBox" style="width:100%;min-height:130px;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:11px;word-break:break-all" placeholder="长按粘贴进度码"></textarea>' +
+      '<div style="margin-top:8px">' +
+      '<button class="btn" onclick="BOARD.mergeCode()">合并到本周期</button> ' +
+      '<button class="btn btn-gray btn-sm" onclick="U.closeSheet()">关闭</button></div>');
+  }
+  function mergeCode() {
+    var v = (document.getElementById('pasteBox') || {}).value || '';
+    if (!v.trim()) { U.toast('请先粘贴进度码'); return; }
+    try {
+      var n = S.applyCycleCode(v);
+      U.closeSheet(); render();
+      U.toast(n ? '已合并 ' + n + ' 项进度' : '这份进度码没有新内容，本机已是最新');
+    } catch (e) { U.toast('合并失败：' + e.message); }
   }
 
   function render() {
@@ -226,6 +259,7 @@ window.BOARD = (function () {
     render: render, setMode: setMode, toggleStation: toggleStation, tick: tick,
     note: note, saveNote: saveNote, clearNote: clearNote, viewRecords: viewRecords,
     syncNow: syncNow, editMember: editMember, saveMember: saveMember,
-    diagnose: diagnose, restoreTeam: restoreTeam
+    diagnose: diagnose, restoreTeam: restoreTeam,
+    genCode: genCode, pasteCode: pasteCode, mergeCode: mergeCode
   };
 })();
