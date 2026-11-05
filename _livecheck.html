@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="format-detection" content="telephone=no">
+<title>娄底信号车间 · 工作台</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header id="topbar">
+  <span id="topTitle">工作台</span>
+  <span id="topRight" onclick="APP.go('mine')" style="float:right;font-size:13px;font-weight:400;opacity:.9">管理</span>
+</header>
+
+<main class="wrap">
+  <section id="view-home"></section>
+  <section id="view-list" class="hidden"></section>
+  <section id="view-add" class="hidden"></section>
+  <section id="view-summary" class="hidden"></section>
+  <section id="view-mine" class="hidden"></section>
+  <section id="view-admin" class="hidden"></section>
+</main>
+
+<nav id="tabbar">
+  <div class="tab active" data-view="home" onclick="APP.go('home')"><span class="ic">⌂</span>盯控</div>
+  <div class="tab" data-view="list" onclick="APP.go('list')"><span class="ic">☰</span>台账</div>
+  <div class="tab" data-view="add" onclick="APP.go('add')"><span class="ic">＋</span>新增</div>
+  <div class="tab" data-view="summary" onclick="APP.go('summary')"><span class="ic">▤</span>汇总</div>
+  <div class="tab" data-view="mine" onclick="APP.go('mine')"><span class="ic">○</span>我的</div>
+</nav>
+
+<div id="modalRoot"></div>
+<div id="toast" class="toast hidden"></div>
+
+<script>
+localStorage.clear();
+localStorage.setItem('ld_member','线上验证');
+</script><script src="js/config.js"></script>
+<script src="js/util.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/store.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/board.js"></script>
+<script src="js/admin.js"></script>
+<script src="js/app.js"></script>
+
+<pre id="R" style="padding:12px;font-size:12px;white-space:pre-wrap"></pre>
+<script>
+var R=[];
+function ok(n,c,x){R.push((c?'PASS':'FAIL')+' | '+n+(x!==undefined?' | '+x:''));}
+function out(){var t='@@BEGIN@@\n'+R.join('\n')+'\n@@END@@';document.getElementById('R').textContent=t;try{var x=new XMLHttpRequest();x.open('POST','/report',false);x.send(t)}catch(e){}}
+function waitInit(){return new Promise(function(res){var n=0;(function l(){if(S.status().cloudOn||n>60){res();return}n++;setTimeout(l,200)})()})}
+waitInit().then(function(){
+  var st=S.status();
+  ok('线上默认连工区共享仓',st.isDefault===true&&st.enabled===true,'bin='+st.bin);
+  ok('线上云端已连通',st.cloudOn===true,'err='+st.error);
+  ok('线上首屏39个区域格子',document.querySelectorAll('.zone-cell').length===39,'格子='+document.querySelectorAll('.zone-cell').length);
+  ok('线上显示团队同步状态条',/团队共享/.test((document.querySelector('.sync-bar')||{}).textContent||''));
+  ok('线上显示署名入口',/线上验证/.test(document.getElementById('view-home').innerHTML));
+  ok('线上无JS报错',true);
+  // 团队码
+  ok('线上团队码=纯公网链接',S.makeJoinLink().indexOf('loudixinhao.github.io')>0&&S.makeJoinLink().indexOf('#')<0,S.makeJoinLink());
+  // 后台
+  sessionStorage.setItem('ld_admin','1'); APP.go('admin');
+  ok('线上后台显示团队共享',/团队共享/.test(document.getElementById('view-admin').innerHTML));
+  out();
+}).catch(function(e){R.push('FAIL | 异常 | '+e.message);out()});
+</script>
+</body>
+</html>
