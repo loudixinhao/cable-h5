@@ -16,7 +16,8 @@ window.S = (function () {
   var KEY = window.CFG.STORAGE_KEY;
   var data = null;
   var cloudOn = false, syncing = false, pending = false, dirty = false;
-  var cloudError = '', lastSync = 0, pushTimer = null, pollTimer = null;
+  var cloudError = '', lastSync = 0;
+  var pushTimer = null, pollTimer = null, retryTimer = null, retryIdx = 0;
   var listeners = [];
 
   function now() { return new Date().toISOString(); }
@@ -104,10 +105,12 @@ window.S = (function () {
   }
   function makeJoinLink() {
     var c = cloudCfg(), base = location.origin + location.pathname;
+    /* 带版本号：微信会把旧链接的网页缓存很久，换新版本必须换 URL 才能拿到新代码 */
+    var v = '?v=' + (window.CFG.BUILD || '1');
     var isDefault = c.provider === 'npoint' && c.bin === window.CFG.TEAM_BIN;
-    if (isDefault) return base;                       // 打开同一链接即共享，最简单
+    if (isDefault) return base + v;                  // 打开同一链接即共享，最简单
     var s = c.provider + '|' + c.bin + '|' + c.url + '|' + c.key;
-    return base + '#join=' + encodeURIComponent(btoa(unescape(encodeURIComponent(s))));
+    return base + v + '#join=' + encodeURIComponent(btoa(unescape(encodeURIComponent(s))));
   }
 
   /* ---------- 云端读写（纯 fetch，双通道） ---------- */
@@ -127,12 +130,12 @@ window.S = (function () {
     if (c.provider === 'supabase') {
       if (!c.url || !c.key) return Promise.reject(new Error('未填写云数据库地址'));
       var u = c.url.replace(/\/$/, '') + '/rest/v1/' + c.table + '?id=eq.' + window.CFG.CLOUD_DOC_ID + '&select=content';
-      return fetchT(u, { headers: { apikey: c.key, Authorization: 'Bearer ' + c.key } })
+      return fetchT(u, { cache: 'no-store', headers: { apikey: c.key, Authorization: 'Bearer ' + c.key } })
         .then(function (r) { if (!r.ok) throw new Error('云端读取失败 ' + r.status); return r.json(); })
         .then(function (arr) { return (arr && arr[0] && arr[0].content) || null; });
     }
     if (!c.bin) return Promise.reject(new Error('未设置团队数据仓'));
-    return fetchT(window.CFG.CLOUD_API + c.bin + '?t=' + Date.now(), { headers: { Accept: 'application/json' } })
+    return fetchT(window.CFG.CLOUD_API + c.bin + '?t=' + Date.now(), { cache: 'no-store', headers: { Accept: 'application/json' } })
       .then(function (r) { if (r.status === 404) return null; if (!r.ok) throw new Error('云端读取失败 ' + r.status); return r.json(); })
       .then(function (o) {
         return (o && typeof o === 'object' && (o.schema || o.records || o.checks || o.notes)) ? o : null;
@@ -144,19 +147,37 @@ window.S = (function () {
     if (c.provider === 'supabase') {
       var u = c.url.replace(/\/$/, '') + '/rest/v1/' + c.table;
       return fetchT(u, {
-        method: 'POST',
+        method: 'POST', cache: 'no-store',
         headers: { apikey: c.key, Authorization: 'Bearer ' + c.key, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' },
         body: JSON.stringify({ id: window.CFG.CLOUD_DOC_ID, content: payload, updated_at: now() })
       }).then(function (r) { if (!r.ok) throw new Error('云端写入失败 ' + r.status); return true; });
     }
     return fetchT(window.CFG.CLOUD_API + c.bin, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     }).then(function (r) { if (!r.ok) throw new Error('云端写入失败 ' + r.status); return true; });
   }
 
   /* ---------- 同步 ---------- */
-  function markOk() { cloudOn = true; cloudError = ''; lastSync = Date.now(); pending = false; emit(); }
-  function markFail(e) { cloudOn = false; cloudError = (e && e.message) ? e.message : '云端未连通'; emit(); }
+  function scheduleRetry() {
+    clearTimeout(retryTimer);
+    var gaps = window.CFG.RETRY_MS || [3000, 8000];
+    var g = gaps[Math.min(retryIdx, gaps.length - 1)];
+    retryIdx++;
+    retryTimer = setTimeout(function () {
+      if (dirty || pending) push(0); else pull();
+    }, g);
+  }
+  function markOk() {
+    cloudOn = true; cloudError = ''; lastSync = Date.now();
+    pending = false; retryIdx = 0; clearTimeout(retryTimer); emit();
+  }
+  function markFail(e) {
+    cloudOn = false;
+    cloudError = (e && e.message) ? e.message : '云端未连通';
+    emit();
+    /* 有改动没传上去时，不等下一轮轮询，主动退避重试（断网恢复后自动补传） */
+    if (cloudCfg().enabled && (dirty || pending)) scheduleRetry();
+  }
 
   /* 推：先拉 → 合并 → 写 → 校验 → 冲突重试（最多 3 次） */
   function push(retries) {
@@ -173,13 +194,17 @@ window.S = (function () {
               data = merged; localWrite(); dirty = false; markOk(); emit(); return true;
             }
             if (n < 2) return attempt(n + 1);      // 被并发覆盖，重新合并再写
-            data = merged; localWrite(); dirty = true; pending = true; markOk(); emit(); return false;
+            /* 三次写入都没能在云端验证到 —— 如实报失败，绝不谎称「已连接」 */
+            data = merged; localWrite(); dirty = true; pending = true;
+            markFail(new Error('云端写入未生效，正在自动重试'));
+            return false;
           });
         });
       });
     }
-    return attempt(0).catch(function (e) { markFail(e); dirty = true; pending = true; return false; })
-      .then(function (r) { syncing = false; emit(); return r; });
+    return attempt(0).catch(function (e) {
+      dirty = true; pending = true; markFail(e); return false;
+    }).then(function (r) { syncing = false; emit(); return r; });
   }
 
   /* 拉：只同步别人的新改动，不写回云端 */
@@ -217,10 +242,73 @@ window.S = (function () {
     return {
       enabled: c.enabled, cloudOn: cloudOn, syncing: syncing, error: cloudError,
       pending: pending, lastSync: lastSync, provider: c.provider, bin: c.bin,
-      hasUrl: !!c.url, member: member(), isDefault: c.provider === 'npoint' && c.bin === window.CFG.TEAM_BIN
+      hasUrl: !!c.url, member: member(), isDefault: c.provider === 'npoint' && c.bin === window.CFG.TEAM_BIN,
+      build: window.CFG.BUILD || '旧版',
+      override: localStorage.getItem('ld_cloud_override') || '',
+      wechat: /MicroMessenger/i.test(navigator.userAgent),
+      retryIdx: retryIdx
     };
   }
   function reload() { return pull(); }
+
+  /* ---------- 同步自检：手机上自己就能判断「到底连没连上」 ---------- */
+  function fingerprint(o) {
+    try {
+      var s = JSON.stringify([
+        o.checks || {}, o.notes || {},
+        (o.records || []).map(function (r) { return [r._id, r._at, r._del]; }),
+        (o.schema || {})._schemaAt || ''
+      ]);
+      var h = 5381;
+      for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+      var x = (h >>> 0).toString(16).toUpperCase();
+      return ('00000000' + x).slice(-8);
+    } catch (e) { return '—'; }
+  }
+  function summarize(o) {
+    if (!o) return null;
+    var sc = o.schema || {}, stations = 0, checksOn = 0;
+    (sc.lines || []).forEach(function (l) { stations += (l.stations || []).length; });
+    Object.keys(o.checks || {}).forEach(function (k) {
+      Object.keys(o.checks[k] || {}).forEach(function (z) {
+        if (window.SYNC.isOn(o.checks[k][z])) checksOn++;
+      });
+    });
+    return {
+      stations: stations, zones: (sc.zones || []).length, modules: (sc.modules || []).length,
+      checkCycles: Object.keys(o.checks || {}).length, checksOn: checksOn,
+      records: (o.records || []).filter(function (r) { return !r._del; }).length,
+      updatedAt: o._updatedAt || '', fingerprint: fingerprint(o)
+    };
+  }
+  function diagnose() {
+    var c = cloudCfg(), t0 = Date.now();
+    var base = {
+      build: window.CFG.BUILD || '旧版',
+      url: location.href,
+      wechat: /MicroMessenger/i.test(navigator.userAgent),
+      enabled: c.enabled, provider: c.provider, bin: c.bin,
+      isDefault: c.provider === 'npoint' && c.bin === window.CFG.TEAM_BIN,
+      override: localStorage.getItem('ld_cloud_override') || '',
+      local: summarize(data), status: status()
+    };
+    if (!c.enabled) {
+      base.ok = false; base.ms = 0;
+      base.error = '本机模式：这台手机被设置为不连团队仓';
+      return Promise.resolve(base);
+    }
+    return cloudGet().then(function (remote) {
+      base.ok = true; base.ms = Date.now() - t0;
+      base.cloud = summarize(remote);
+      base.sameFingerprint = !!(remote && base.cloud && base.local &&
+        base.cloud.fingerprint === base.local.fingerprint);
+      return base;
+    }).catch(function (e) {
+      base.ok = false; base.ms = Date.now() - t0;
+      base.error = (e && e.message) ? e.message : String(e);
+      return base;
+    });
+  }
 
   function init() {
     data = localRead();
@@ -333,6 +421,7 @@ window.S = (function () {
     save: save, reload: reload, status: status, onChange: onChange,
     setCloud: setCloud, setTeamBin: setTeamBin, useDefaultTeam: useDefaultTeam,
     cloudCfg: cloudCfg, makeJoinLink: makeJoinLink, syncNow: syncNow, pull: pull, startAuto: startAuto,
+    diagnose: diagnose,
     member: member, setMember: setMember,
     addRecord: addRecord, updateRecord: updateRecord, delRecord: delRecord,
     clearAllRecords: clearAllRecords, setSchema: setSchema, resetAll: resetAll,
