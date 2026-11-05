@@ -12,24 +12,50 @@ window.BOARD = (function () {
   function key() { return U.cycleKey(cyc()); }
   function readonly() { return cycMode === 'prev'; }
 
+  function syncBar() {
+    var st = S.status();
+    var cls = !st.enabled ? 'off' : (st.cloudOn ? '' : (st.error ? 'err' : 'off'));
+    var label, sub;
+    if (!st.enabled) {
+      label = '本机模式';
+      sub = '数据仅存这台手机，未开启团队共享';
+    } else if (st.cloudOn) {
+      label = st.syncing ? '团队共享 · 同步中' : '团队共享 · 已连接';
+      var t = st.lastSync ? new Date(st.lastSync) : null;
+      sub = '全工区同一份台账 · 最近同步 ' + (t ? U.pad(t.getHours()) + ':' + U.pad(t.getMinutes()) + ':' + U.pad(t.getSeconds()) : '—') +
+        (st.pending ? ' · 有改动待上传' : '');
+    } else {
+      label = '离线（本地已保存）';
+      sub = '联网后自动补传，不影响现在打勾';
+    }
+    return '<div class="sync-bar ' + cls + '"><span class="sync-dot"></span>' +
+      '<span class="sync-txt"><b>' + label + '</b><br>' + U.esc(sub) +
+      (st.error ? '<br><span style="color:#e54d42">' + U.esc(st.error) + '</span>' : '') + '</span>' +
+      '<span class="sync-btn" onclick="BOARD.syncNow()">立即同步</span></div>';
+  }
+
   function render() {
     var s = S.schema(), c = cyc(), k = key();
-    var stat = U.zoneStats(s, S.checks(), c);
+    var rawChecks = S.checks() || {};
+    var stat = U.zoneStats(s, rawChecks, c);
     var sNotes = (S.notes() || {})[k] || {};
     var left = U.daysLeft(s.testDay, s.testHour);
-    var st = S.status();
 
     var h = '';
     /* 顶部总览 */
     h += '<div class="card"><div class="card-title">' + U.esc(s.workshop) + ' · 本周期任务盯控</div>' +
+      syncBar() +
       '<div style="text-align:center"><span class="cd-num">' + left + '</span><span class="muted"> 天后到下次 ' + s.testDay + ' 日 ' + s.testHour + ':00</span></div>' +
       '<div class="muted" style="text-align:center">' + U.ymd(c.start) + ' ~ ' + U.ymd(c.end) + '</div>' +
       '<div class="divider"></div>' +
       '<div class="row"><span class="muted">区域完成</span><span class="bold">' + stat.done + ' / ' + stat.total + ' 个区域</span></div>' +
       '<div class="progress"><i style="width:' + (stat.total ? stat.done / stat.total * 100 : 0) + '%"></i></div>' +
       '<div class="row"><span class="muted">整站完成（全区域打勾）</span><span class="bold">' + stat.stationDone + ' / ' + stat.stationTotal + ' 站</span></div>' +
-      (st.enabled ? '<div class="tips">已连团队云台账，工友打勾会实时汇总到这里。</div>'
-        : '<div class="tips">当前为本机记录。开启云同步后，工区多人打勾会汇总到一起（见「我的」→管理后台）。</div>') +
+      '<div class="divider"></div>' +
+      '<div class="row"><span class="muted">我的署名</span><span class="bold link" style="color:#1989fa" onclick="BOARD.editMember()">' +
+      U.esc(S.member() || '点此填写姓名') + ' <span class="muted" style="font-weight:400">›</span></span></div>' +
+      memberLine(k) +
+      '<div class="tips">工友打开同一链接或扫「团队码」即共用这份进度，谁勾的、什么时候勾的都可查；断网也能勾，联网自动补传。</div>' +
       '</div>';
 
     /* 周期切换 */
@@ -59,9 +85,14 @@ window.BOARD = (function () {
 
         if (open) {
           h += '<div class="zone-grid">' + stn.zones.map(function (z) {
-            var on = !!stat.map[U.ckKey(stn.name, z)];
+            var rec = stat.map[U.ckKey(stn.name, z)];
+            var on = !!rec;
+            var by = on ? (rec.by || '') : '';
+            var at = on ? shortAt(rec.at) : '';
             return '<div class="zone-cell ' + (on ? 'on' : '') + '" onclick="BOARD.tick(\'' + U.esc(stn.name) + '\',\'' + U.esc(z) + '\')">' +
-              '<span class="zone-check">' + (on ? '✓' : '') + '</span>' + U.esc(z) + '</div>';
+              '<span class="zone-main"><span class="zone-check">' + (on ? '✓' : '') + '</span>' + U.esc(z) + '</span>' +
+              (on ? '<span class="zone-by">' + U.esc((by || '未署名') + (at ? ' · ' + at : '')) + '</span>' : '') +
+              '</div>';
           }).join('') + '</div>';
           if (!stn.zones.length) h += '<div class="tips">该站还没设置区域，请管理员到后台「区域管理」添加。</div>';
 
@@ -84,6 +115,36 @@ window.BOARD = (function () {
     document.getElementById('view-home').innerHTML = h;
   }
 
+  function memberLine(cycKey) {
+    var ms = window.SYNC.members(S.get(), cycKey);
+    if (!ms.length) return '<div class="tips">本周期还没有人打勾，完成后这里会显示参与人。</div>';
+    return '<div style="margin-top:6px"><span class="muted" style="font-size:12px">本周期参与（' + ms.length + ' 人）：</span><br>' +
+      ms.map(function (m) { return '<span class="member-chip">' + U.esc(m.name) + '</span>'; }).join('') + '</div>';
+  }
+
+  function shortAt(iso) {
+    if (!iso) return '';
+    var m = String(iso).match(/-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    return m ? m[1] + '/' + m[2] + ' ' + m[3] + ':' + m[4] : '';
+  }
+  function syncNow() {
+    U.toast('正在同步…');
+    S.syncNow().then(function () {
+      render();
+      var st = S.status();
+      U.toast(st.cloudOn ? (st.pending ? '已连上，仍有改动待补传' : '已同步到团队台账') : '暂未连上，数据已存在本机');
+    });
+  }
+  function editMember() {
+    U.sheet('设置我的姓名',
+      '<div class="tips" style="margin-bottom:8px">填一次即可（存在这台手机）。你打勾、写记录时会署上名字，工区其他人能看到「谁完成的」。</div>' +
+      '<div class="field"><label>姓名 / 工号</label><input id="memBox" type="text" value="' + U.esc(S.member()) + '" placeholder="如：张三"></div>' +
+      '<button class="btn" onclick="BOARD.saveMember()">保存</button>');
+  }
+  function saveMember() {
+    var v = (document.getElementById('memBox') || {}).value || '';
+    S.setMember(v); U.closeSheet(); render(); U.toast('已保存：' + (v.trim() || '未署名'));
+  }
   function setMode(m) { cycMode = m; render(); }
   function toggleStation(name) { expanded[name] = expanded[name] === false; render(); }
 
@@ -118,6 +179,7 @@ window.BOARD = (function () {
 
   return {
     render: render, setMode: setMode, toggleStation: toggleStation, tick: tick,
-    note: note, saveNote: saveNote, clearNote: clearNote, viewRecords: viewRecords
+    note: note, saveNote: saveNote, clearNote: clearNote, viewRecords: viewRecords,
+    syncNow: syncNow, editMember: editMember, saveMember: saveMember
   };
 })();
