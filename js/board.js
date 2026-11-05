@@ -17,21 +17,66 @@ window.BOARD = (function () {
     var cls = !st.enabled ? 'off' : (st.cloudOn ? '' : (st.error ? 'err' : 'off'));
     var label, sub;
     if (!st.enabled) {
-      label = '本机模式';
-      sub = '数据仅存这台手机，未开启团队共享';
+      label = '未连团队共享（本机模式）';
+      sub = '数据只在这台手机，工友看不到';
     } else if (st.cloudOn) {
-      label = st.syncing ? '团队共享 · 同步中' : '团队共享 · 已连接';
+      label = st.syncing ? '团队共享 · 同步中' : '团队共享 · 已连接云端';
       var t = st.lastSync ? new Date(st.lastSync) : null;
-      sub = '全工区同一份台账 · 最近同步 ' + (t ? U.pad(t.getHours()) + ':' + U.pad(t.getMinutes()) + ':' + U.pad(t.getSeconds()) : '—') +
+      sub = '全工区同一份台账 · 最近成功 ' +
+        (t ? U.pad(t.getHours()) + ':' + U.pad(t.getMinutes()) + ':' + U.pad(t.getSeconds()) : '—') +
         (st.pending ? ' · 有改动待上传' : '');
     } else {
-      label = '离线（本地已保存）';
-      sub = '联网后自动补传，不影响现在打勾';
+      label = st.error ? '云端未连通（本地已保存）' : '正在连接云端…';
+      sub = '本地改动已保存，会自动重试补传，不影响现在打勾';
     }
+    /* 版本号常显：截图就能看出这台手机是不是加载了旧版 */
+    var subHtml = U.esc(sub) + ' <span class="muted">· v' + U.esc(st.build || '旧版') + '</span>';
+    if (!st.enabled) subHtml += ' <span style="color:#1989fa;text-decoration:underline" onclick="BOARD.restoreTeam()">点此恢复共享</span>';
     return '<div class="sync-bar ' + cls + '"><span class="sync-dot"></span>' +
-      '<span class="sync-txt"><b>' + label + '</b><br>' + U.esc(sub) +
+      '<span class="sync-txt"><b>' + label + '</b><br>' + subHtml +
       (st.error ? '<br><span style="color:#e54d42">' + U.esc(st.error) + '</span>' : '') + '</span>' +
       '<span class="sync-btn" onclick="BOARD.syncNow()">立即同步</span></div>';
+  }
+
+  /* 一键恢复工区默认共享仓（误切「本机模式」/连错仓时可自救） */
+  function restoreTeam() {
+    if (!confirm('恢复为工区默认共享仓？\n本机已有的打勾和记录会保留并合并上传，不会丢失。')) return;
+    U.toast('正在恢复…');
+    S.useDefaultTeam().then(function () { return S.syncNow(); })
+      .then(function () { render(); U.toast('已恢复团队共享'); });
+  }
+
+  /* 同步自检：把「连没连上、连的哪个仓、是不是旧版」一次性摆出来 */
+  function diagnose() {
+    U.sheet('同步自检', '<div class="tips">正在检测云端连通，请稍候…</div>');
+    S.diagnose().then(function (d) {
+      var r = [];
+      function row(k, v) { r.push('<div class="row"><span class="muted">' + k + '</span><span class="bold">' + v + '</span></div>'); }
+      row('程序版本', 'v' + U.esc(d.build));
+      row('云端连通', d.ok ? '<span style="color:#07a854">成功 · ' + d.ms + ' ms</span>' : '<span style="color:#e54d42">失败</span>');
+      if (!d.ok) row('失败原因', U.esc(d.error || '未知'));
+      row('团队共享', d.enabled ? (d.isDefault ? '工区默认仓 ✓' : '自定义数据仓') : '<span style="color:#e54d42">未开启</span>');
+      row('数据仓编号', U.esc(String(d.bin || '—')));
+      row('打开方式', d.wechat ? '微信内置浏览器' : '手机浏览器');
+      if (d.override) row('本机特殊设置', U.esc(d.override));
+      if (d.cloud) {
+        row('云端 · 打勾', d.cloud.checksOn + ' 个 / ' + d.cloud.checkCycles + ' 个周期');
+        row('云端 · 记录', d.cloud.records + ' 条');
+        row('云端 · 站点', d.cloud.stations + ' 站 · 默认区域 ' + d.cloud.zones + ' 类');
+        row('云端数据指纹', d.cloud.fingerprint);
+        row('本机数据指纹', d.local.fingerprint);
+        row('两端是否一致', d.sameFingerprint ? '<span style="color:#07a854">一致 ✓</span>' : '不一致（同步后会一致）');
+      }
+      var html = r.join('') + '<div class="divider"></div>' +
+        '<div class="tips">两台手机都点一次「同步自检」，<b>数据仓编号</b>和<b>云端数据指纹</b>相同，才是同一份台账。<br>' +
+        (d.wechat ? '<b>提示：</b>微信里可能一直加载旧版，建议点右上角「···」→「在浏览器打开」。<br>' : '') +
+        '把这一屏截图发出来，就能判断是没连上云端、连错仓，还是手机缓存了旧版。</div>' +
+        '<div style="margin-top:10px">' +
+        '<button class="btn btn-line btn-sm" onclick="S.syncNow().then(function(){BOARD.diagnose()})">立即同步并复测</button> ' +
+        (!d.enabled ? '<button class="btn btn-sm" onclick="U.closeSheet();BOARD.restoreTeam()">恢复团队共享</button> ' : '') +
+        '<button class="btn btn-gray btn-sm" onclick="U.closeSheet()">关闭</button></div>';
+      U.sheet('同步自检', html);
+    });
   }
 
   function render() {
@@ -180,6 +225,7 @@ window.BOARD = (function () {
   return {
     render: render, setMode: setMode, toggleStation: toggleStation, tick: tick,
     note: note, saveNote: saveNote, clearNote: clearNote, viewRecords: viewRecords,
-    syncNow: syncNow, editMember: editMember, saveMember: saveMember
+    syncNow: syncNow, editMember: editMember, saveMember: saveMember,
+    diagnose: diagnose, restoreTeam: restoreTeam
   };
 })();
